@@ -1,20 +1,33 @@
 #!/bin/bash
-# Variables
-BACKUP_FOLDER="/root/backup-data/" # Backup folder location
-DATETIME=`date +"%Y-%m-%d-%H-%M"` # Date time format 
-DATABASE_LIST="cds_apphd sbtest" # List of mariadb database, seperate by "space bar"
-MARIADB_USER="user" # username of backup user
-MARIADB_PASSWORD="password" # password of backup user
-DAYSTORETAINBACKUP="14" # Days to keep newest file
+
+# ref
+# https://stackoverflow.com/questions/1078196/take-perfect-backup-with-mysqldump
+
+# MySQL credentials
+USER="root"
+PASSWORD="mypassword"
+BACKUP_FOLDER="/root/backup-data/mariadb"
+DAYSTORETAINBACKUP="3" # Days to keep newest file
+
 # Create backup folder
 if [ ! -d "$BACKUP_FOLDER" ]; then
   mkdir -p $BACKUP_FOLDER
 fi
-# Backup DB
-for i in $DATABASE_LIST; do
-  echo "Backing up $i database"
-  mysqldump -u $MARIADB_USER -p$MARIADB_PASSWORD $i > $BACKUP_FOLDER$i-$DATETIME.sql
+
+# Get the list of databases
+databases=$(mysql -u $USER -p$PASSWORD -e "SHOW DATABASES;" | tr -d "| " | grep -v Database)
+
+# Loop through each database and back it up
+for db in $databases; do
+  if [[ "$db" != "information_schema" ]] && [[ "$db" != "performance_schema" ]] && [[ "$db" != "mysql" ]] && [[ "$db" != _* ]]; then
+    echo "Backing up database: $db"
+    mysqldump -u $USER -p$PASSWORD --databases $db -R -e --triggers --single-transaction > $BACKUP_FOLDER/$(date +%Y-%m-%d-%H-%M)_$db.sql
+  fi
 done
+
+# Backup full database
+echo "Backing up full database"
+mysqldump -u $USER -p$PASSWORD -A -R -E --triggers --single-transaction > $BACKUP_FOLDER/$(date +%Y-%m-%d-%H-%M)_full.sql
 
 # Delete old files
 find $BACKUP_FOLDER -type f -mtime +$DAYSTORETAINBACKUP -exec rm {} +
