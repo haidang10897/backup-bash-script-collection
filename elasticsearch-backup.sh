@@ -1,39 +1,51 @@
 #!/bin/bash
-# Variables
-BACKUP_ARCHIVE_FOLDER="/root/backup-data/elasticsearch" # Backup folder location
-BACKUP_TMP_FOLDER="/backup/elasticsearch"
-ELASTICSEARCH_SYSTEM_USER="elasticsearch"
-ELASTICSEARCH_USER="elastic"
-ELASTICSEARCH_PASSWORD="password"
-ELASTICSEARCH_URL="http://192.168.1.1:9200"
-SNAPSHOT_NAME="snapshot_event_io"
-INDICES="event,identity_object"
 
-# Create backup folder
-if [ ! -d "$BACKUP_ARCHIVE_FOLDER" ]; then
-  mkdir -p $BACKUP_ARCHIVE_FOLDER
-fi
+# Elasticsearch credentials
+ES_HOST="http://localhost:9200"
+ES_USER="elastic"
+ES_PASSWORD="mypassword"
+OUTPUT_DIR="/root/backup-data/elasticsearch"
+BACKUPDAYS="5"
 
-# Create backup tmp folder
-if [ ! -d "$BACKUP_TMP_FOLDER" ]; then
-  mkdir -p $BACKUP_TMP_FOLDER
-fi
+# ============================== Instrall Elasticdump =========================
+# Function to check if a command exists
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
 
-# Grant permission for user elasticsearch to folder
-chown -R $ELASTICSEARCH_SYSTEM_USER:$ELASTICSEARCH_SYSTEM_USER $BACKUP_TMP_FOLDER
-
-# Check if backup snapshot with above repository exist?
-response=`curl -s --user $ELASTICSEARCH_USER:$ELASTICSEARCH_PASSWORD $ELASTICSEARCH_URL/_snapshot/_all\?pretty\=true | grep $BACKUP_TMP_FOLDER | wc -l`
-if [ $response == "1" ]; then
-  echo "Backup snapshot exist!! No need to create"
+# Check if elasticdump is installed
+if command_exists elasticdump; then
+  echo "elasticdump is already installed."
 else
-  curl -s --user $ELASTICSEARCH_USER:$ELASTICSEARCH_PASSWORD $ELASTICSEARCH_URL/_snapshot/backup_repo --header 'Content-Type: application/json' --data-raw '{ "type": "fs", "settings": { "location": "'$BACKUP_TMP_FOLDER'", "compress": true } }'
+  echo "elasticdump is not installed. Installing now..."
+  # Install Node.js and npm if not already installed
+  if ! command_exists node || ! command_exists npm; then
+    echo "Node.js and npm are required. Installing Node.js and npm..."
+    sudo apt update
+    sudo apt install -y nodejs npm
+  fi
+  # Install elasticdump globally
+  sudo npm install -g elasticdump
+  echo "elasticdump has been installed."
 fi
 
-# Delete old snapshot
-curl --location --request DELETE --user $ELASTICSEARCH_USER:$ELASTICSEARCH_PASSWORD $ELASTICSEARCH_URL/_snapshot/backup_repo/$SNAPSHOT_NAME
-echo "DELETED OLD SNAPSHOT"
+# ============================== Backup =======================================
+# Create backup folder
+if [ ! -d "$OUTPUT_DIR" ]; then
+  mkdir -p $OUTPUT_DIR
+fi
 
-# Snapshot
-curl --location --request PUT --user $ELASTICSEARCH_USER:$ELASTICSEARCH_PASSWORD $ELASTICSEARCH_URL/_snapshot/backup_repo/$SNAPSHOT_NAME?wait_for_completion=false --header 'Content-Type: application/json' --data-raw '{ "indices": "'$INDICES'", "ignore_unavailable": true, "include_global_state": false, "metadata": { "taken_by": "backup_script", "taken_because": "manual_snapshot" }, "index_settings": { "index.codec": "best_compression" }}'
-echo "SNAPSHOT DONE"
+# Get the list of indices
+indices=$(curl -s -u $ES_USER:$ES_PASSWORD "$ES_HOST/_cat/indices?h=index" | tr -d ' '| grep -v '^\.')
+
+# Base64 encode credentials
+credential_base64=$(echo -n $ES_USER:$ES_PASSWORD | base64)
+
+# Loop through each index and back it up
+for index in $indices; do
+  echo "Backing up index: $index"
+  elasticdump --input="$ES_HOST/$index" --output="$OUTPUT_DIR/$(date +%Y-%m-%d-%H-%M)_$index.json" --type=data --limit=10000 --headers='{"Authorization": "Basic '$credential_base64'"}'
+done
+
+# Cleanup old backups
+find $OUTPUT_DIR -type f -mtime +$BACKUPDAYS -exec rm -f {} +
